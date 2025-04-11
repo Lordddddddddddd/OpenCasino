@@ -1,0 +1,532 @@
+----------------------------------------------------------------------
+-- OpenWin OS v1.0
+-- Windows 10-подобная операционная система для OpenComputers
+-- Разработано для среды Lua, симулирующей полноценный GUI
+-- Автор: Lordddddddddddd / AI Companion
+-- Дата: 2025 год
+----------------------------------------------------------------------
+
+-- Подключение необходимых модулей OpenComputers
+local component       = require("component")
+local term            = require("term")
+local event           = require("event")
+local filesystem      = require("filesystem")
+local keyboard        = require("keyboard")
+local os              = require("os")
+local shell           = require("shell")
+local serialization   = require("serialization")
+local gpu             = component.gpu
+
+-- Определение размеров экрана
+local screenWidth, screenHeight = gpu.getResolution()
+
+-- Тема (цветовая схема)
+local theme = {
+  desktop    = 0x1D1F21,  -- фон рабочего стола
+  window     = 0xC0C0C0,  -- фон окон
+  titleBar   = 0x0078D7,  -- заголовок окна
+  taskbar    = 0x0078D7,  -- панель задач
+  button     = 0xE1E1E1,  -- края и кнопки
+  text       = 0x000000,  -- цвет текста
+  highlight  = 0xFFD700   -- выделение
+}
+
+----------------------------------------------------------------------
+-- Функции отрисовки и вспомогательные процедуры
+----------------------------------------------------------------------
+
+-- Очистка экрана и установка фонового цвета рабочего стола
+local function clearScreen()
+  term.clear()
+  gpu.setBackground(theme.desktop)
+  gpu.fill(1, 1, screenWidth, screenHeight, " ")
+end
+
+-- Заполнение прямоугольной области символом с указанным цветом
+local function fillRect(x, y, w, h, char, col)
+  gpu.setForeground(col)
+  for i = 0, h - 1 do
+    gpu.set(x, y + i, string.rep(char, w))
+  end
+end
+
+-- Отрисовка прямоугольника с заданным фоновым цветом
+local function drawRect(x, y, w, h, col)
+  gpu.setBackground(col)
+  gpu.fill(x, y, w, h, " ")
+end
+
+-- Вывод текста по координатам. Если указан цвет фона, устанавливает его.
+local function drawText(x, y, text, fg, bg)
+  gpu.setForeground(fg or theme.text)
+  if bg then gpu.setBackground(bg) end
+  gpu.set(x, y, text)
+end
+
+-- Вывод центрированного текста в области указанной ширины
+local function drawCenteredText(x, y, w, text, fg, bg)
+  local startx = x + math.floor((w - #text) / 2)
+  drawText(startx, y, text, fg, bg)
+end
+
+----------------------------------------------------------------------
+-- Менеджер окон: создание, отрисовка, управление и закрытие окон
+----------------------------------------------------------------------
+
+local windows = {}       -- таблица с окнами
+local windowID = 1       -- уникальный ID для каждого окна
+
+-- Функция создания нового окна
+local function createWindow(title, x, y, w, h, appFunc)
+  local win = {
+    id = windowID,
+    title = title,
+    x = x,
+    y = y,
+    width = w,
+    height = h,
+    appFunc = appFunc,  -- функция, отвечающая за отображение содержимого окна
+    active = true,
+    focused = false,
+  }
+  windowID = windowID + 1
+  table.insert(windows, win)
+  return win
+end
+
+-- Отрисовка отдельного окна (фона, заголовка и рамки)
+local function drawWindow(win)
+  -- Отрисовка фона окна
+  drawRect(win.x, win.y, win.width, win.height, theme.window)
+  -- Отрисовка строки заголовка
+  gpu.setBackground(theme.titleBar)
+  gpu.fill(win.x, win.y, win.width, 1, " ")
+  drawText(win.x + 2, win.y, " " .. win.title .. " ", theme.text)
+  -- Рамка окна
+  gpu.setForeground(theme.button)
+  for i = win.x, win.x + win.width - 1 do
+    gpu.set(i, win.y, "─")
+    gpu.set(i, win.y + win.height - 1, "─")
+  end
+  for j = win.y, win.y + win.height - 1 do
+    gpu.set(win.x, j, "│")
+    gpu.set(win.x + win.width - 1, j, "│")
+  end
+  gpu.set(win.x, win.y, "┌")
+  gpu.set(win.x + win.width - 1, win.y, "┐")
+  gpu.set(win.x, win.y + win.height - 1, "└")
+  gpu.set(win.x + win.width - 1, win.y + win.height - 1, "┘")
+  -- Если функция приложения определена, вызываем её для отрисовки содержимого
+  if win.appFunc then
+    win.appFunc(win)
+  end
+end
+
+-- Закрытие окна по его ID
+local function closeWindow(id)
+  for i, win in ipairs(windows) do
+    if win.id == id then
+      table.remove(windows, i)
+      break
+    end
+  end
+end
+
+-- Отрисовка всех активных окон
+local function drawAllWindows()
+  for _, win in ipairs(windows) do
+    if win.active then
+      drawWindow(win)
+    end
+  end
+end
+
+----------------------------------------------------------------------
+-- Панель задач и рабочий стол
+----------------------------------------------------------------------
+
+local taskbarHeight = 1  -- высота панели задач (1 строка)
+
+-- Отрисовка панели задач с кнопкой "Start" и текущим временем
+local function drawTaskbar()
+  gpu.setBackground(theme.taskbar)
+  gpu.fill(1, screenHeight - taskbarHeight + 1, screenWidth, taskbarHeight, " ")
+  drawText(2, screenHeight - taskbarHeight + 1, "[ Start ]", theme.text)
+  local timeStr = os.date("%H:%M:%S")
+  drawText(screenWidth - 8, screenHeight - taskbarHeight + 1, timeStr, theme.text)
+end
+
+-- Обновление рабочего стола: фон и иконки ярлыков
+local function updateDesktop()
+  clearScreen()
+  -- Отрисовка основного фона рабочего стола
+  drawRect(1, 1, screenWidth, screenHeight, theme.desktop)
+  -- Ярлыки на рабочем столе
+  drawText(2, 2, "Мой компьютер", theme.text)
+  drawText(2, 4, "Блокнот", theme.text)
+  drawText(2, 6, "Терминал", theme.text)
+  drawText(2, 8, "Проводник", theme.text)
+  drawText(2, 10, "Настройки", theme.text)
+  drawText(2, 12, "Систем. инфо", theme.text)
+end
+
+----------------------------------------------------------------------
+-- Приложения OpenWin OS
+----------------------------------------------------------------------
+
+------------------------------
+-- Приложение: Блокнот (Notepad)
+------------------------------
+local function appNotepad()
+  updateDesktop()
+  drawTaskbar()
+  local win = createWindow("Блокнот", 10, 5, 50, 15)
+  local textLines = {""}
+  local cursorX, cursorY = 1, 1
+  local running = true
+
+  local function renderNotepad()
+    drawWindow(win)
+    gpu.setBackground(theme.window)
+    for i, line in ipairs(textLines) do
+      drawText(win.x + 2, win.y + i, line, theme.text)
+    end
+    -- Отрисовка курсора (статичный символ)
+    gpu.set(win.x + 2 + cursorX - 1, win.y + cursorY, "_")
+  end
+
+  while running do
+    renderNotepad()
+    local _, _, char, code = event.pull("key_down")
+    if code == 28 then  -- Enter
+      cursorY = cursorY + 1
+      cursorX = 1
+      textLines[cursorY] = ""
+    elseif code == 14 then  -- Backspace
+      if cursorX > 1 then
+        local str = textLines[cursorY]
+        textLines[cursorY] = str:sub(1, cursorX - 2) .. str:sub(cursorX)
+        cursorX = cursorX - 1
+      elseif cursorY > 1 then
+        cursorX = #textLines[cursorY - 1] + 1
+        textLines[cursorY - 1] = textLines[cursorY - 1] .. textLines[cursorY]
+        table.remove(textLines, cursorY)
+        cursorY = cursorY - 1
+      end
+    elseif code == 1 then  -- Esc для выхода
+      running = false
+    else
+      local ch = string.char(char)
+      textLines[cursorY] = textLines[cursorY] .. ch
+      cursorX = cursorX + 1
+    end
+  end
+  closeWindow(win.id)
+  updateDesktop()
+  drawTaskbar()
+end
+
+------------------------------
+-- Приложение: Терминал
+------------------------------
+local function appTerminal()
+  updateDesktop()
+  drawTaskbar()
+  local win = createWindow("Терминал", 15, 8, 60, 20)
+  local history = {}
+  local inputLine = ""
+  local running = true
+
+  local function renderTerminal()
+    drawWindow(win)
+    gpu.setBackground(theme.window)
+    local yOff = 1
+    for i, line in ipairs(history) do
+      if yOff < win.height - 2 then
+        drawText(win.x + 2, win.y + yOff, line, theme.text)
+        yOff = yOff + 1
+      end
+    end
+    drawText(win.x + 2, win.y + yOff, "> " .. inputLine, theme.text)
+  end
+
+  while running do
+    renderTerminal()
+    local _, _, key, char, code = event.pull("key_down")
+    if code == 28 then  -- Enter
+      table.insert(history, "> " .. inputLine)
+      inputLine = ""
+    elseif code == 14 then  -- Backspace
+      inputLine = inputLine:sub(1, -2)
+    elseif code == 1 then  -- Esc
+      running = false
+    else
+      inputLine = inputLine .. string.char(char or 0)
+    end
+    if #history > (win.height - 3) then
+      table.remove(history, 1)
+    end
+  end
+  closeWindow(win.id)
+  updateDesktop()
+  drawTaskbar()
+end
+
+------------------------------
+-- Приложение: Проводник (File Manager)
+------------------------------
+local function appFileManager()
+  updateDesktop()
+  drawTaskbar()
+  local win = createWindow("Проводник", 20, 10, 60, 20)
+  local currentPath = "/"
+  local fileList = {}
+
+  local function refreshFiles()
+    fileList = {}
+    for name, attr in filesystem.list(currentPath) do
+      table.insert(fileList, name)
+    end
+  end
+
+  refreshFiles()
+
+  local running = true
+  local function renderFileManager()
+    drawWindow(win)
+    gpu.setBackground(theme.window)
+    for i, file in ipairs(fileList) do
+      drawText(win.x + 2, win.y + i, file, theme.text)
+    end
+  end
+
+  while running do
+    renderFileManager()
+    local _, _, x, y, button = event.pull("touch")
+    -- Если клик вне границ окна проводника — завершаем приложение
+    if not (x >= win.x and x < win.x + win.width and y >= win.y and y < win.y + win.height) then
+      running = false
+    end
+  end
+  closeWindow(win.id)
+  updateDesktop()
+  drawTaskbar()
+end
+
+------------------------------
+-- Приложение: Настройки
+------------------------------
+local function appSettings()
+  updateDesktop()
+  drawTaskbar()
+  local win = createWindow("Настройки", 25, 8, 50, 15)
+  local options = {"Звук", "Видео", "Сеть", "Обновления", "О системе"}
+  local running = true
+
+  local function renderSettings()
+    drawWindow(win)
+    gpu.setBackground(theme.window)
+    for i, opt in ipairs(options) do
+      drawText(win.x + 2, win.y + i, opt, theme.text)
+    end
+  end
+
+  while running do
+    renderSettings()
+    local _, _, x, y, button = event.pull("touch")
+    if not (x >= win.x and x < win.x + win.width and y >= win.y and y < win.y + win.height) then
+      running = false
+    else
+      -- Для упрощения: выбор опции просто завершает приложение
+      running = false
+    end
+  end
+  closeWindow(win.id)
+  updateDesktop()
+  drawTaskbar()
+end
+
+------------------------------
+-- Приложение: Системная информация
+------------------------------
+local function appSystemInfo()
+  updateDesktop()
+  drawTaskbar()
+  local win = createWindow("Информация", 30, 10, 50, 15)
+  local info = {
+    "OpenWin OS v1.0",
+    "Разработчик: Lordddddddddddd",
+    "Дата: 2025",
+    "Компоненты: GPU, TERM, FS, EVENT, OS",
+    "Система: OpenComputers"
+  }
+  local running = true
+
+  local function renderInfo()
+    drawWindow(win)
+    gpu.setBackground(theme.window)
+    for i, line in ipairs(info) do
+      drawText(win.x + 2, win.y + i, line, theme.text)
+    end
+  end
+
+  while running do
+    renderInfo()
+    local _, _, x, y, button = event.pull("touch")
+    if not (x >= win.x and x < win.x + win.width and y >= win.y and y < win.y + win.height) then
+      running = false
+    end
+  end
+  closeWindow(win.id)
+  updateDesktop()
+  drawTaskbar()
+end
+
+----------------------------------------------------------------------
+-- Обработчик стартового меню
+----------------------------------------------------------------------
+
+local function showStartMenu()
+  local menuW, menuH = 25, 7
+  local menuX, menuY = 2, screenHeight - taskbarHeight - menuH
+  drawRect(menuX, menuY, menuW, menuH, theme.window)
+  drawText(menuX + 2, menuY + 1, "1. Блокнот", theme.text)
+  drawText(menuX + 2, menuY + 2, "2. Терминал", theme.text)
+  drawText(menuX + 2, menuY + 3, "3. Проводник", theme.text)
+  drawText(menuX + 2, menuY + 4, "4. Настройки", theme.text)
+  drawText(menuX + 2, menuY + 5, "5. Инфо", theme.text)
+  
+  local _, _, x, y, button = event.pull("touch")
+  if x >= menuX and x < menuX + menuW and y >= menuY and y < menuY + menuH then
+    if y == menuY + 1 then
+      appNotepad()
+    elseif y == menuY + 2 then
+      appTerminal()
+    elseif y == menuY + 3 then
+      appFileManager()
+    elseif y == menuY + 4 then
+      appSettings()
+    elseif y == menuY + 5 then
+      appSystemInfo()
+    end
+  end
+  updateDesktop()
+  drawTaskbar()
+end
+
+----------------------------------------------------------------------
+-- Глобальный слушатель клавиш для системных команд
+----------------------------------------------------------------------
+
+local function globalKeyListener()
+  while true do
+    local _, _, char, code = event.pull("key_down")
+    if code == keyboard.keys.f5 then
+      drawText(1, math.floor(screenHeight / 2), "Перезагрузка...", 0x00FF00)
+      os.sleep(2)
+      os.exit()
+    elseif code == keyboard.keys.f6 then
+      drawText(1, math.floor(screenHeight / 2), "Выключение...", 0xFF0000)
+      os.sleep(2)
+      os.exit()
+    end
+    os.sleep(0.1)
+  end
+end
+
+----------------------------------------------------------------------
+-- Основной цикл рабочего стола
+----------------------------------------------------------------------
+
+local function desktopLoop()
+  updateDesktop()
+  drawTaskbar()
+  while true do
+    local _, _, x, y, button = event.pull("touch")
+    -- Если клик по кнопке "Start" на панели задач
+    if y == screenHeight - taskbarHeight + 1 and x >= 2 and x < 10 then
+      showStartMenu()
+    else
+      -- Обработка кликов по ярлыкам на рабочем столе
+      if x >= 2 and x < 20 then
+        if y == 2 then
+          appFileManager()
+        elseif y == 4 then
+          appNotepad()
+        elseif y == 6 then
+          appTerminal()
+        elseif y == 8 then
+          appFileManager()
+        elseif y == 10 then
+          appSettings()
+        elseif y == 12 then
+          appSystemInfo()
+        end
+      end
+    end
+    drawAllWindows()
+    drawTaskbar()
+  end
+end
+
+----------------------------------------------------------------------
+-- Фоновый процесс обновления времени (часы)
+----------------------------------------------------------------------
+
+local function clockUpdater()
+  while true do
+    local timeStr = os.date("%H:%M:%S")
+    drawText(screenWidth - 8, screenHeight - taskbarHeight + 1, timeStr, theme.text)
+    os.sleep(1)
+  end
+end
+
+----------------------------------------------------------------------
+-- Основная функция запуска ОС
+----------------------------------------------------------------------
+
+local parallelAvailable, parallel = pcall(require, "parallel")
+local function main()
+  clearScreen()
+  updateDesktop()
+  drawTaskbar()
+  if parallelAvailable then
+    parallel.waitForAny(desktopLoop, globalKeyListener, clockUpdater)
+  else
+    while true do
+      desktopLoop()
+    end
+  end
+end
+
+----------------------------------------------------------------------
+-- Дополнительные утилиты и функции (заполнитель)
+----------------------------------------------------------------------
+
+local function extraUtility1()
+  for i = 1, 10 do
+    print("ExtraUtility1 line " .. i)
+  end
+end
+
+local function extraUtility2()
+  for i = 1, 10 do
+    print("ExtraUtility2 line " .. i)
+  end
+end
+
+local function extraUtility3()
+  for i = 1, 10 do
+    print("ExtraUtility3 line " .. i)
+  end
+end
+
+-- Вызов дополнительных утилит (для демонстрации)
+extraUtility1()
+extraUtility2()
+extraUtility3()
+
+----------------------------------------------------------------------
+-- Запуск операционной системы OpenWin OS
+----------------------------------------------------------------------
+main()
