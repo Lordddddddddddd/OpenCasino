@@ -1,284 +1,163 @@
 -------------------------------------------------
--- Casino Infinity 5.0
--- Уникальная версия казино для OpenComputers на Lua
+-- Casino /warp 24 – Улучшенный 3D интерфейс
+-- Версия с 3D-эффектами: баннер, кнопки, оконная графика
 -------------------------------------------------
 
--- Подключение основных модулей
 local component = require("component")
 local term = require("term")
 local os = require("os")
-local math = require("math")
 local event = require("event")
-
--- Инициализация GPU для цветного вывода и проверка звукового модуля
+local math = require("math")
 local gpu = component.gpu
-local speaker = nil
-if component.isAvailable("speaker") then
-  speaker = component.speaker
-end
+
+-- Получаем разрешение экрана
+local w, h = gpu.getResolution()
 
 -------------------------------------------------
--- Инициализация профиля игрока
-local player = {
-  name = nil,        -- имя игрока, будет запрошено
-  balance = 500,     -- начальный баланс в казино (валюта)
-  xp = 0,            -- опыт, для системы уровней
-  level = 1,         -- стартовый уровень
-  combo = 0,         -- счётчик подряд выигранных спинов (для мультипликатора)
-  multiplier = 1     -- множитель выигрышей (увеличивается при серии побед)
-}
-
--------------------------------------------------
--- Функция регистрации игрока
-local function initPlayer()
-  term.clear()
-  print("Добро пожаловать в Casino Infinity 5.0!")
-  print("Введите ваше имя:")
-  local name = io.read()
-  if not name or name == "" then
-    name = "Игрок"
-  end
-  player.name = name
-  print("Привет, " .. player.name .. "!")
-  os.sleep(1)
-end
-
--------------------------------------------------
--- Функция отображения главного меню
-local function showMenu()
-  term.clear()
-  gpu.setForeground(0x00FFFF)  -- цвет – бирюзовый
-  print("=== Casino Infinity 5.0 ===")
-  print("1. Играть в слот-машину")
-  print("2. Посмотреть статистику")
-  print("3. Выйти")
-  gpu.setForeground(0xFFFFFF)
-  print("\nВыберите опцию (1-3):")
-end
-
--------------------------------------------------
--- Функция ввода ставки игрока
-local function getBet()
-  print("Ваш баланс: " .. player.balance .. " кредитов.")
-  print("Введите сумму ставки:")
-  local betStr = io.read()
-  local bet = tonumber(betStr)
-  if bet and bet > 0 and bet <= player.balance then
-    return bet
-  else 
-    print("Неверная сумма. Попробуйте снова.")
-    return getBet()
-  end
-end
-
--------------------------------------------------
--- Функция воспроизведения звуковых эффектов
-local function playSound(eventType)
-  if not speaker then return end
-  if eventType == "win" then
-    speaker.playNote(72, 0.3)   -- нота для выигрыша
-  elseif eventType == "loss" then
-    speaker.playNote(55, 0.3)   -- нота для проигрыша
-  elseif eventType == "secret" then
-    speaker.playNote(80, 0.4)   -- высокая нота для секретного выигрыша
-  elseif eventType == "levelup" then
-    speaker.playNote(85, 0.5)   -- нота повышения уровня
-  elseif eventType == "bonus" then
-    speaker.playNote(77, 0.3)   -- звук бонуса
-  end
-end
-
--------------------------------------------------
--- Функция динамического изменения цвета текста
-local function setColorForEvent(eventType)
-  if eventType == "win" then
-    gpu.setForeground(0x00FF00)   -- неоновый зелёный для выигрыша
-  elseif eventType == "loss" then
-    gpu.setForeground(0xFF0000)   -- ярко-красный для проигрыша
-  elseif eventType == "secret" then
-    gpu.setForeground(0xFF00FF)   -- пурпурный для секретной комбинации
-  elseif eventType == "bonus" then
-    gpu.setForeground(0x0000FF)   -- синий для бонусного спина
-  else
-    gpu.setForeground(0xFFFFFF)
-  end
-end
-
--------------------------------------------------
--- Функция анимации слотов
-local function animateSlots(finalReels)
-  local iterations = 15
-  for i = 1, iterations do
-    term.clear()
-    gpu.setForeground(0xFFFF00)  -- желтый цвет для анимации
-    print("Вращение слотов...")
-    local reel1 = math.random(1, 9)
-    local reel2 = math.random(1, 9)
-    local reel3 = math.random(1, 9)
-    print("        [ " .. reel1 .. " ] [ " .. reel2 .. " ] [ " .. reel3 .. " ]")
-    os.sleep(0.08)
-  end
-  term.clear()
-  print("Результат:")
-  print("        [ " .. finalReels[1] .. " ] [ " .. finalReels[2] .. " ] [ " .. finalReels[3] .. " ]")
-  os.sleep(0.5)
-end
-
--------------------------------------------------
--- Функция оценки спина
--- Здесь реализованы уникальные условия:
--- • Секретный джекпот: три 7 или последовательность (возрастающая / убывающая)
--- • Джекпот: все три символа совпадают (но не секретный)
--- • Бонусный спин: если совпадают 2 символа
--- • Проигрыш: ни одно условие не выполнено
-local function evaluateSpin(bet)
-  local reel1 = math.random(1, 9)
-  local reel2 = math.random(1, 9)
-  local reel3 = math.random(1, 9)
-  local finalReels = { reel1, reel2, reel3 }
-  animateSlots(finalReels)
+-- Функция для рисования 3D-окна (панели)
+-- x, y      — верхний левый угол
+-- width, height — размеры панели
+-- primaryColor  — основной (панель) цвет
+-- shadowColor   — цвет тени (имитация глубины)
+local function draw3DBox(x, y, width, height, primaryColor, shadowColor)
+  -- Рисуем основной прямоугольник панели
+  gpu.setBackground(primaryColor)
+  gpu.fill(x, y, width, height, " ")
   
-  local winType = nil
-  local winAmount = 0
+  -- Рисуем правую тень (сдвиг вправо)
+  gpu.setBackground(shadowColor)
+  gpu.fill(x + width, y + 1, 2, height, " ")
   
-  if reel1 == 7 and reel2 == 7 and reel3 == 7 then
-    winType = "secret"
-    winAmount = bet * 50 * player.multiplier
-  elseif (reel1 == reel2 and reel2 == reel3) then
-    winType = "win"
-    winAmount = bet * 20 * player.multiplier
-  elseif ((reel1 + 1 == reel2 and reel2 + 1 == reel3) or (reel1 - 1 == reel2 and reel2 - 1 == reel3)) then
-    winType = "secret"
-    winAmount = bet * 30 * player.multiplier
-  elseif (reel1 == reel2 or reel1 == reel3 or reel2 == reel3) then
-    winType = "bonus"
-    winAmount = 0  -- бонусный спин определит выигрыш
-  else
-    winType = "loss"
-    winAmount = 0
-  end
+  -- Рисуем нижнюю тень (сдвиг вниз)
+  gpu.fill(x + 2, y + height, width, 2, " ")
   
-  return winType, winAmount, finalReels
+  -- Сброс цвета фона
+  gpu.setBackground(0x000000)
 end
 
 -------------------------------------------------
--- Функция бонусного спина
-local function bonusSpin(bet)
-  print("Запуск бонусного спина!")
-  playSound("bonus")
-  local reel1 = math.random(1, 9)
-  local reel2 = math.random(1, 9)
-  local reel3 = math.random(1, 9)
-  local bonusReels = { reel1, reel2, reel3 }
-  animateSlots(bonusReels)
-  if (reel1 == reel2 and reel2 == reel3) then
-    local winAmount = bet * 10 * player.multiplier
-    setColorForEvent("bonus")
-    print("Бонусный джекпот! Вы выигрываете " .. winAmount .. " кредитов!")
-    playSound("bonus")
-    gpu.setForeground(0xFFFFFF)
-    return winAmount
-  else
-    print("Бонусный спин не принес выигрыша.")
-    playSound("loss")
-    return 0
-  end
-end
-
--------------------------------------------------
--- Функция обновления прогресса игрока (XP, уровень и комбо)
-local function updateProgress(winType, bet)
-  if winType == "loss" then
-    player.combo = 0
-    player.multiplier = 1
-  else
-    player.combo = player.combo + 1
-    player.multiplier = math.min(1 + player.combo * 0.2, 5)
-  end
-  local xpGain = bet * ((winType == "loss") and 0.5 or 1)
-  player.xp = player.xp + xpGain
-  if player.xp >= player.level * 100 then
-    player.xp = player.xp - player.level * 100
-    player.level = player.level + 1
-    print("Поздравляем, вы достигли уровня " .. player.level .. "!")
-    playSound("levelup")
-    player.balance = player.balance + 50  -- бонус за повышение уровня
-  end
-end
-
--------------------------------------------------
--- Основная функция игрового спина
-local function playSlots()
-  local bet = getBet()
-  player.balance = player.balance - bet
-  local winType, winAmount, finalReels = evaluateSpin(bet)
-  updateProgress(winType, bet)
+-- Функция для рисования текста с эффектом тени (drop shadow)
+-- text      — текст
+-- x, y      — координаты
+-- color     — основной цвет текста
+-- shadowColor — цвет тени
+local function draw3DText(text, x, y, color, shadowColor)
+  -- Рисуем тень: смещенный ниже и вправо
+  gpu.setForeground(shadowColor)
+  term.setCursor(x + 1, y + 1)
+  io.write(text)
   
-  if winType == "secret" then
-    setColorForEvent("secret")
-    print("Уникальная комбинация! Секретный выигрыш!")
-    print("Вы получаете " .. winAmount .. " кредитов!")
-    playSound("secret")
-    player.balance = player.balance + winAmount
-  elseif winType == "win" then
-    setColorForEvent("win")
-    print("Джекпот! Все символы совпали!")
-    print("Вы получаете " .. winAmount .. " кредитов!")
-    playSound("win")
-    player.balance = player.balance + winAmount
-  elseif winType == "bonus" then
-    setColorForEvent("bonus")
-    print("Два символа совпали. Бонусный спин активирован!")
-    playSound("bonus")
-    local bonusWin = bonusSpin(bet)
-    player.balance = player.balance + bonusWin
-  else
-    setColorForEvent("loss")
-    print("К сожалению, спин не принес выигрыша.")
-    playSound("loss")
-  end
+  -- Рисуем основной текст
+  gpu.setForeground(color)
+  term.setCursor(x, y)
+  io.write(text)
   
   gpu.setForeground(0xFFFFFF)
-  os.sleep(1)
 end
 
 -------------------------------------------------
--- Функция отображения статистики и прогресса игрока
-local function viewStats()
+-- Функция для отрисовки 3D баннера казино
+local function draw3DBanner()
+  local bannerText = "CASINO /warp 24"
+  local bannerWidth = #bannerText + 10
+  local boxX = math.floor((w - bannerWidth) / 2)
+  local boxY = 3
+  local boxHeight = 5
+  
+  -- Рисуем 3D окно баннера (синий блок с тенью)
+  draw3DBox(boxX, boxY, bannerWidth, boxHeight, 0x1E90FF, 0x0D3A75)
+  
+  -- Центрируем текст баннера
+  local textX = boxX + math.floor((bannerWidth - #bannerText) / 2)
+  local textY = boxY + math.floor(boxHeight / 2)
+  draw3DText(bannerText, textX, textY, 0xFFFF00, 0x555555)
+end
+
+-------------------------------------------------
+-- Функция для отображения главного меню в 3D стиле
+local function showMainMenu()
   term.clear()
-  print("===== Статистика игрока =====")
-  print("Имя: " .. player.name)
-  print("Уровень: " .. player.level)
-  print("XP: " .. player.xp .. " / " .. (player.level * 100))
-  print("Баланс: " .. player.balance .. " кредитов")
-  print("Комбо-побед: " .. player.combo)
-  print("Текущий множитель: " .. string.format("%.1f", player.multiplier))
-  print("============================")
-  print("Нажмите Enter для возврата в меню.")
+  draw3DBanner()
+  
+  local menuOptions = {"1. Играть", "2. Статистика", "3. Выход"}
+  local menuX = math.floor(w / 2) - 10
+  local menuY = 10
+  
+  for i, option in ipairs(menuOptions) do
+    -- Для каждого пункта меню отрисовываем 3D кнопку
+    local btnWidth = 20
+    local btnHeight = 3
+    local btnX = menuX
+    local btnY = menuY + (i - 1) * (btnHeight + 1)
+    
+    -- Рисуем кнопку с эффектом глубины
+    draw3DBox(btnX, btnY, btnWidth, btnHeight, 0x2E8B57, 0x1F5F3A)
+    
+    local textX = btnX + math.floor((btnWidth - #option) / 2)
+    local textY = btnY + math.floor(btnHeight / 2)
+    draw3DText(option, textX, textY, 0xFFFFFF, 0x000000)
+  end
+  
+  term.setCursor(1, h)
+  io.write("Выберите опцию (1-3): ")
+end
+
+-------------------------------------------------
+-- Функция для отображения статистики в отдельном 3D окне
+local function showStats()
+  term.clear()
+  local statsBoxWidth = 40
+  local statsBoxHeight = 10
+  local boxX = math.floor((w - statsBoxWidth) / 2)
+  local boxY = math.floor((h - statsBoxHeight) / 2)
+  
+  draw3DBox(boxX, boxY, statsBoxWidth, statsBoxHeight, 0x8A2BE2, 0x431C7C)  -- Фиолетовый блок с тенями
+  
+  draw3DText("СТАТИСТИКА:", boxX + 3, boxY + 2, 0xFFFF00, 0x444444)
+  -- Пример статистических данных
+  draw3DText("Спины: 123", boxX + 3, boxY + 4, 0xFFFFFF, 0x444444)
+  draw3DText("Выигрыши: 45", boxX + 3, boxY + 5, 0xFFFFFF, 0x444444)
+  draw3DText("Проигрыши: 78", boxX + 3, boxY + 6, 0xFFFFFF, 0x444444)
+  draw3DText("Уровень: 5", boxX + 3, boxY + 7, 0xFFFFFF, 0x444444)
+  term.setCursor(1, h)
+  io.write("Нажмите Enter для возврата...")
   io.read()
 end
 
 -------------------------------------------------
--- Главный цикл игры
+-- Заглушка для игрового процесса (пример 3D интерфейса)
+local function startGame()
+  term.clear()
+  draw3DBanner()
+  local msg = "Игра начинается!"
+  draw3DText(msg, math.floor(w/2) - math.floor(#msg/2), math.floor(h/2), 0x00FF00, 0x444444)
+  term.setCursor(1, h)
+  io.write("Нажмите Enter для возврата в меню...")
+  io.read()
+end
+
+-------------------------------------------------
+-- Главный цикл программы с выразительным 3D интерфейсом
 local function mainLoop()
   while true do
-    showMenu()
+    showMainMenu()
     local choice = io.read()
     if choice == "1" then
-      playSlots()
+      startGame()
     elseif choice == "2" then
-      viewStats()
+      showStats()
     elseif choice == "3" then
-      print("До свидания!")
+      term.clear()
+      print("Спасибо за игру!")
       break
     else
       print("Неверный выбор. Попробуйте снова.")
+      os.sleep(1)
     end
-    os.sleep(1)
   end
 end
 
 -------------------------------------------------
--- Инициализация и запуск Casino Infinity 5.0
-initPlayer()
+-- Запуск программы
+term.clear()
 mainLoop()
