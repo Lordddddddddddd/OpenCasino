@@ -1,89 +1,284 @@
--- Подключаем необходимые модули OpenComputers
+-------------------------------------------------
+-- Casino Infinity 5.0
+-- Уникальная версия казино для OpenComputers на Lua
+-------------------------------------------------
+
+-- Подключение основных модулей
 local component = require("component")
-local event = require("event")
-local sides = require("sides")
+local term = require("term")
 local os = require("os")
 local math = require("math")
+local event = require("event")
 
--- Настроим стороны транспозера:
-local inputSide     = sides.top    -- сундук, куда игрок кладёт алмаз для ставки
-local trashSide     = sides.back   -- скрытый сундук, куда забирается алмаз (ставка "сгорает")
-local prizeChestSide= sides.right  -- сундук с призами (предварительно загруженный, например, с элитными предметами)
-local winChestSide  = sides.bottom -- сундук, куда выдаётся выигрыш
-
--- Функция для поиска алмаза в сундуке ставки
-local function findDiamond()
-  local size = component.transposer.getInventorySize(inputSide)
-  for slot = 1, size do
-    local item = component.transposer.getStackInSlot(inputSide, slot)
-    if item and item.name == "minecraft:diamond" then
-      return slot, item.size
-    end
-  end
-  return nil, 0
+-- Инициализация GPU для цветного вывода и проверка звукового модуля
+local gpu = component.gpu
+local speaker = nil
+if component.isAvailable("speaker") then
+  speaker = component.speaker
 end
 
--- Функция для удаления алмаза из сундука ставки (перемещаем его в скрытый, мусорный сундук)
-local function removeDiamond(slot)
-  local item = component.transposer.getStackInSlot(inputSide, slot)
-  if item then
-    -- Передаём все найденные предметы из указанного слота (ставка может состоять из нескольких алмазов)
-    local count = item.size
-    component.transposer.transferItem(inputSide, slot, trashSide, 1, count)
+-------------------------------------------------
+-- Инициализация профиля игрока
+local player = {
+  name = nil,        -- имя игрока, будет запрошено
+  balance = 500,     -- начальный баланс в казино (валюта)
+  xp = 0,            -- опыт, для системы уровней
+  level = 1,         -- стартовый уровень
+  combo = 0,         -- счётчик подряд выигранных спинов (для мультипликатора)
+  multiplier = 1     -- множитель выигрышей (увеличивается при серии побед)
+}
+
+-------------------------------------------------
+-- Функция регистрации игрока
+local function initPlayer()
+  term.clear()
+  print("Добро пожаловать в Casino Infinity 5.0!")
+  print("Введите ваше имя:")
+  local name = io.read()
+  if not name or name == "" then
+    name = "Игрок"
+  end
+  player.name = name
+  print("Привет, " .. player.name .. "!")
+  os.sleep(1)
+end
+
+-------------------------------------------------
+-- Функция отображения главного меню
+local function showMenu()
+  term.clear()
+  gpu.setForeground(0x00FFFF)  -- цвет – бирюзовый
+  print("=== Casino Infinity 5.0 ===")
+  print("1. Играть в слот-машину")
+  print("2. Посмотреть статистику")
+  print("3. Выйти")
+  gpu.setForeground(0xFFFFFF)
+  print("\nВыберите опцию (1-3):")
+end
+
+-------------------------------------------------
+-- Функция ввода ставки игрока
+local function getBet()
+  print("Ваш баланс: " .. player.balance .. " кредитов.")
+  print("Введите сумму ставки:")
+  local betStr = io.read()
+  local bet = tonumber(betStr)
+  if bet and bet > 0 and bet <= player.balance then
+    return bet
+  else 
+    print("Неверная сумма. Попробуйте снова.")
+    return getBet()
   end
 end
 
--- Функция для выдачи выигрыша: перемещаем приз из источника в призовой сундук
-local function winGame()
-  -- В данном примере берём приз из первого слота призового сундука. Если у вас больше вариантов, можно добавить рандомизацию.
-  local prizeSlot = 1
-  local prizeItem = component.transposer.getStackInSlot(prizeChestSide, prizeSlot)
-  if prizeItem then
-    -- Переносим один экземпляр приза. Если нужно больше, можно изменить параметр count.
-    local count = 1
-    local transferred = component.transposer.transferItem(prizeChestSide, prizeSlot, winChestSide, 1, count)
-    if transferred > 0 then
-      print("Приз выдан!")
+-------------------------------------------------
+-- Функция воспроизведения звуковых эффектов
+local function playSound(eventType)
+  if not speaker then return end
+  if eventType == "win" then
+    speaker.playNote(72, 0.3)   -- нота для выигрыша
+  elseif eventType == "loss" then
+    speaker.playNote(55, 0.3)   -- нота для проигрыша
+  elseif eventType == "secret" then
+    speaker.playNote(80, 0.4)   -- высокая нота для секретного выигрыша
+  elseif eventType == "levelup" then
+    speaker.playNote(85, 0.5)   -- нота повышения уровня
+  elseif eventType == "bonus" then
+    speaker.playNote(77, 0.3)   -- звук бонуса
+  end
+end
+
+-------------------------------------------------
+-- Функция динамического изменения цвета текста
+local function setColorForEvent(eventType)
+  if eventType == "win" then
+    gpu.setForeground(0x00FF00)   -- неоновый зелёный для выигрыша
+  elseif eventType == "loss" then
+    gpu.setForeground(0xFF0000)   -- ярко-красный для проигрыша
+  elseif eventType == "secret" then
+    gpu.setForeground(0xFF00FF)   -- пурпурный для секретной комбинации
+  elseif eventType == "bonus" then
+    gpu.setForeground(0x0000FF)   -- синий для бонусного спина
+  else
+    gpu.setForeground(0xFFFFFF)
+  end
+end
+
+-------------------------------------------------
+-- Функция анимации слотов
+local function animateSlots(finalReels)
+  local iterations = 15
+  for i = 1, iterations do
+    term.clear()
+    gpu.setForeground(0xFFFF00)  -- желтый цвет для анимации
+    print("Вращение слотов...")
+    local reel1 = math.random(1, 9)
+    local reel2 = math.random(1, 9)
+    local reel3 = math.random(1, 9)
+    print("        [ " .. reel1 .. " ] [ " .. reel2 .. " ] [ " .. reel3 .. " ]")
+    os.sleep(0.08)
+  end
+  term.clear()
+  print("Результат:")
+  print("        [ " .. finalReels[1] .. " ] [ " .. finalReels[2] .. " ] [ " .. finalReels[3] .. " ]")
+  os.sleep(0.5)
+end
+
+-------------------------------------------------
+-- Функция оценки спина
+-- Здесь реализованы уникальные условия:
+-- • Секретный джекпот: три 7 или последовательность (возрастающая / убывающая)
+-- • Джекпот: все три символа совпадают (но не секретный)
+-- • Бонусный спин: если совпадают 2 символа
+-- • Проигрыш: ни одно условие не выполнено
+local function evaluateSpin(bet)
+  local reel1 = math.random(1, 9)
+  local reel2 = math.random(1, 9)
+  local reel3 = math.random(1, 9)
+  local finalReels = { reel1, reel2, reel3 }
+  animateSlots(finalReels)
+  
+  local winType = nil
+  local winAmount = 0
+  
+  if reel1 == 7 and reel2 == 7 and reel3 == 7 then
+    winType = "secret"
+    winAmount = bet * 50 * player.multiplier
+  elseif (reel1 == reel2 and reel2 == reel3) then
+    winType = "win"
+    winAmount = bet * 20 * player.multiplier
+  elseif ((reel1 + 1 == reel2 and reel2 + 1 == reel3) or (reel1 - 1 == reel2 and reel2 - 1 == reel3)) then
+    winType = "secret"
+    winAmount = bet * 30 * player.multiplier
+  elseif (reel1 == reel2 or reel1 == reel3 or reel2 == reel3) then
+    winType = "bonus"
+    winAmount = 0  -- бонусный спин определит выигрыш
+  else
+    winType = "loss"
+    winAmount = 0
+  end
+  
+  return winType, winAmount, finalReels
+end
+
+-------------------------------------------------
+-- Функция бонусного спина
+local function bonusSpin(bet)
+  print("Запуск бонусного спина!")
+  playSound("bonus")
+  local reel1 = math.random(1, 9)
+  local reel2 = math.random(1, 9)
+  local reel3 = math.random(1, 9)
+  local bonusReels = { reel1, reel2, reel3 }
+  animateSlots(bonusReels)
+  if (reel1 == reel2 and reel2 == reel3) then
+    local winAmount = bet * 10 * player.multiplier
+    setColorForEvent("bonus")
+    print("Бонусный джекпот! Вы выигрываете " .. winAmount .. " кредитов!")
+    playSound("bonus")
+    gpu.setForeground(0xFFFFFF)
+    return winAmount
+  else
+    print("Бонусный спин не принес выигрыша.")
+    playSound("loss")
+    return 0
+  end
+end
+
+-------------------------------------------------
+-- Функция обновления прогресса игрока (XP, уровень и комбо)
+local function updateProgress(winType, bet)
+  if winType == "loss" then
+    player.combo = 0
+    player.multiplier = 1
+  else
+    player.combo = player.combo + 1
+    player.multiplier = math.min(1 + player.combo * 0.2, 5)
+  end
+  local xpGain = bet * ((winType == "loss") and 0.5 or 1)
+  player.xp = player.xp + xpGain
+  if player.xp >= player.level * 100 then
+    player.xp = player.xp - player.level * 100
+    player.level = player.level + 1
+    print("Поздравляем, вы достигли уровня " .. player.level .. "!")
+    playSound("levelup")
+    player.balance = player.balance + 50  -- бонус за повышение уровня
+  end
+end
+
+-------------------------------------------------
+-- Основная функция игрового спина
+local function playSlots()
+  local bet = getBet()
+  player.balance = player.balance - bet
+  local winType, winAmount, finalReels = evaluateSpin(bet)
+  updateProgress(winType, bet)
+  
+  if winType == "secret" then
+    setColorForEvent("secret")
+    print("Уникальная комбинация! Секретный выигрыш!")
+    print("Вы получаете " .. winAmount .. " кредитов!")
+    playSound("secret")
+    player.balance = player.balance + winAmount
+  elseif winType == "win" then
+    setColorForEvent("win")
+    print("Джекпот! Все символы совпали!")
+    print("Вы получаете " .. winAmount .. " кредитов!")
+    playSound("win")
+    player.balance = player.balance + winAmount
+  elseif winType == "bonus" then
+    setColorForEvent("bonus")
+    print("Два символа совпали. Бонусный спин активирован!")
+    playSound("bonus")
+    local bonusWin = bonusSpin(bet)
+    player.balance = player.balance + bonusWin
+  else
+    setColorForEvent("loss")
+    print("К сожалению, спин не принес выигрыша.")
+    playSound("loss")
+  end
+  
+  gpu.setForeground(0xFFFFFF)
+  os.sleep(1)
+end
+
+-------------------------------------------------
+-- Функция отображения статистики и прогресса игрока
+local function viewStats()
+  term.clear()
+  print("===== Статистика игрока =====")
+  print("Имя: " .. player.name)
+  print("Уровень: " .. player.level)
+  print("XP: " .. player.xp .. " / " .. (player.level * 100))
+  print("Баланс: " .. player.balance .. " кредитов")
+  print("Комбо-побед: " .. player.combo)
+  print("Текущий множитель: " .. string.format("%.1f", player.multiplier))
+  print("============================")
+  print("Нажмите Enter для возврата в меню.")
+  io.read()
+end
+
+-------------------------------------------------
+-- Главный цикл игры
+local function mainLoop()
+  while true do
+    showMenu()
+    local choice = io.read()
+    if choice == "1" then
+      playSlots()
+    elseif choice == "2" then
+      viewStats()
+    elseif choice == "3" then
+      print("До свидания!")
+      break
     else
-      print("Ошибка выдачи приза! Проверьте сундук с призами.")
+      print("Неверный выбор. Попробуйте снова.")
     end
-  else
-    print("Призовой сундук пуст или отсутствует предмет в нужном слоте!")
+    os.sleep(1)
   end
 end
 
--- Функция игры – простая слот-машина
-local function playSlotMachine()
-  print("Игра начинается... Удачи!")
-  -- Обновляем генератор случайных чисел
-  math.randomseed(os.time())
-  local reel1 = math.random(1, 3)
-  local reel2 = math.random(1, 3)
-  local reel3 = math.random(1, 3)
-  
-  -- Выводим результаты "вращений"
-  print("Выпали: " .. reel1 .. "  " .. reel2 .. "  " .. reel3)
-  
-  -- Определяем выигрыш (если все три числа совпадают)
-  if reel1 == reel2 and reel2 == reel3 then
-    print("Поздравляем, Вы выиграли!")
-    winGame()
-  else
-    print("Вы проиграли. Попробуйте снова!")
-  end
-end
-
--- Основной цикл системы казино
-print("Казино /warp 24 запущено. Ожидание ставки (алмаз) ...")
-while true do
-  -- Проверяем входной сундук на наличие алмаза
-  local slot, count = findDiamond()
-  if slot then
-    print("Обнаружен алмаз в слоте " .. slot .. ". Начинаем игру!")
-    removeDiamond(slot)   -- забираем ставку
-    playSlotMachine()     -- запускаем игру
-    print("=== Ожидание следующей ставки ===")
-    os.sleep(2)         -- небольшая задержка между играми
-  end
-  os.sleep(1)           -- опрашиваем сундук каждую секунду
-end
+-------------------------------------------------
+-- Инициализация и запуск Casino Infinity 5.0
+initPlayer()
+mainLoop()
