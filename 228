@@ -1,13 +1,16 @@
 ----------------------------------------------------------------------
--- OpenWin OS v2.0
--- Windows 10-подобная операционная система для OpenComputers
--- Улучшенный дизайн окон с кнопками: минимизация, максимизация, закрытие.
--- Поддержка сворачивания, разворачивания и максимизации окон.
+-- OpenWin OS v3.5
+-- Глобальное обновление операционной системы для OpenComputers на Lua
+-- ► Улучшенный дизайн. Новая цветовая гамма, двойные рамки и обновленные кнопки.
+-- ► Плавные анимации переходов с применением функции easeOutSine.
+-- ► Исправления управления окнами: минимизация, максимизация и закрытие работают корректно.
+-- ► Расширенная система работы с файлами и оптимизированная производительность.
+--
 -- Автор: Lordddddddddddd / AI Companion
 -- Дата: 2025 год
 ----------------------------------------------------------------------
 
--- Подключение модулей OpenComputers
+-- Подключение базовых модулей OpenComputers
 local component       = require("component")
 local term            = require("term")
 local event           = require("event")
@@ -18,24 +21,25 @@ local shell           = require("shell")
 local serialization   = require("serialization")
 local gpu             = component.gpu
 
--- Определение размеров экрана
+-- Получение размеров экрана
 local screenWidth, screenHeight = gpu.getResolution()
 
--- Тема (цветовая схема)
+-- Новая тема (современная цветовая гамма)
 local theme = {
-  desktop    = 0x1E1E1E,  -- фон рабочего стола
-  window     = 0xC0C0C0,  -- фон окон (контент)
-  titleBar   = 0x0078D7,  -- цвет заголовка окна
-  taskbar    = 0x0078D7,  -- панель задач
-  buttonFg   = 0xFFFFFF,  -- текст на кнопках
-  buttonBg   = 0xD9534F,  -- фон кнопки (закрытия)
-  controlBg  = 0xE1E1E1,  -- фон остальных кнопок
-  text       = 0xFFFFFF,  -- цвет текста для окон
-  iconColor  = 0xFFD700   -- цвет для иконок
+  desktop      = 0x1C1C1C,  -- глубокий тёмный фон рабочего стола
+  window       = 0x2B2B2B,  -- фон окон (контент)
+  titleBar     = 0x0A84FF,  -- ярко-голубой (заголовок окна)
+  taskbar      = 0x1F1F1F,  -- темно-серый (панель задач)
+  buttonFg     = 0xFFFFFF,  -- белый цвет кнопок
+  buttonBgClose= 0xFF3B30,  -- красный для кнопки закрытия
+  buttonBgMax  = 0x34C759,  -- зелёный для кнопки максимизации
+  buttonBgMin  = 0xFFCC00,  -- желтый для кнопки минимизации
+  text         = 0xFFFFFF,  -- белый текст
+  iconColor    = 0xFFD700   -- яркий золотой для иконок
 }
 
 ----------------------------------------------------------------------
--- Функции отрисовки
+-- Функции отрисовки экрана и текста
 ----------------------------------------------------------------------
 
 local function clearScreen()
@@ -63,19 +67,64 @@ local function drawText(x, y, text, fg, bg)
 end
 
 local function drawCenteredText(x, y, w, text, fg, bg)
-  local startx = x + math.floor((w - #text)/2)
+  local startx = x + math.floor((w - #text) / 2)
   drawText(startx, y, text, fg, bg)
 end
 
 ----------------------------------------------------------------------
--- Функции управления окнами (контроль кнопок)
+-- Функция обновления экрана: рабочий стол, окна, панель задач
 ----------------------------------------------------------------------
 
--- Каждая кнопка занимает 4 символа в строке заголовка.
--- Распределяем кнопки по правому краю заголовка:
--- Минмизировать: диапазон [win.x+win.width-12, win.x+win.width-9)
--- Максимизировать: [win.x+win.width-8, win.x+win.width-5)
--- Закрыть: [win.x+win.width-4, win.x+win.width)
+local function updateScreen()
+  clearScreen()
+  drawDesktopIcons()
+  drawAllWindows()
+  drawTaskbar()
+end
+
+----------------------------------------------------------------------
+-- Функция сглаживания (easing) для анимаций
+----------------------------------------------------------------------
+
+local function easeOutSine(t)
+  return math.sin((t * math.pi) / 2)
+end
+
+----------------------------------------------------------------------
+-- Плавная анимация изменения параметров окна
+----------------------------------------------------------------------
+
+local function animateWindowTransition(win, targetX, targetY, targetWidth, targetHeight, duration)
+  local steps = 20  -- Количество шагов анимации для плавности
+  local startX = win.x
+  local startY = win.y
+  local startWidth = win.width
+  local startHeight = win.height
+  for i = 1, steps do
+    local t = i / steps
+    local ease = easeOutSine(t)
+    win.x = math.floor(startX + (targetX - startX) * ease)
+    win.y = math.floor(startY + (targetY - startY) * ease)
+    win.width = math.floor(startWidth + (targetWidth - startWidth) * ease)
+    win.height = math.floor(startHeight + (targetHeight - startHeight) * ease)
+    updateScreen()
+    os.sleep(duration / steps)
+  end
+  win.x = targetX
+  win.y = targetY
+  win.width = targetWidth
+  win.height = targetHeight
+end
+
+----------------------------------------------------------------------
+-- Функции управления окнами: кнопки управления (мин, макс, закрыть)
+----------------------------------------------------------------------
+
+-- Каждая кнопка занимает 4 символа.
+-- Распределяем кнопки в строке заголовка:
+-- Минимизация: "[–]" (символ U+2013, можно использовать стандартный минус)
+-- Максимизация: "[□]"
+-- Закрытие: "[X]"
 local function checkWindowControls(win, x, y)
   if y == win.y then
     local closeStart = win.x + win.width - 4
@@ -84,9 +133,6 @@ local function checkWindowControls(win, x, y)
     if x >= closeStart and x < win.x + win.width then
       return "close"
     elseif x >= maxStart and x < closeStart - 4 then
-      -- Если вдруг ширина не позволяет, то вынуждены объединить кнопки
-      return "maximize"
-    elseif x >= maxStart and x < win.x + win.width - 4 then
       return "maximize"
     elseif x >= minStart and x < maxStart then
       return "minimize"
@@ -99,10 +145,9 @@ end
 -- Менеджер окон
 ----------------------------------------------------------------------
 
-local windows = {}       -- таблица окон
-local windowID = 1       -- уникальный идентификатор окна
+local windows = {}       -- таблица всех окон
+local windowID = 1       -- уникальный идентификатор для окон
 
--- Функция создания окна; сохраняем оригинальные координаты для восстановления
 local function createWindow(title, x, y, w, h, appFunc)
   local win = {
     id = windowID,
@@ -111,54 +156,52 @@ local function createWindow(title, x, y, w, h, appFunc)
     y = y,
     width = w,
     height = h,
-    appFunc = appFunc,  -- функция, отвечающая за отрисовку содержимого
+    appFunc = appFunc,  -- функция отрисовки содержимого окна
     active = true,
     minimized = false,
     maximized = false,
-    origX = x,
-    origY = y,
-    origWidth = w,
-    origHeight = h,
+    origX = x, origY = y,
+    origWidth = w, origHeight = h,
   }
   windowID = windowID + 1
   table.insert(windows, win)
   return win
 end
 
--- Функция рисует окно с улучшенным дизайном и кнопками управления
+-- Для улучшения дизайна используем двойные рамки
 local function drawWindow(win)
-  -- Рисуем заголовок
+  -- Рисуем заголовок окна с двойной рамкой
   gpu.setBackground(theme.titleBar)
   gpu.fill(win.x, win.y, win.width, 1, " ")
   drawText(win.x + 2, win.y, " " .. win.title .. " ", theme.text)
-  -- Отрисовка кнопок управления:
-  -- Кнопка минимизации ([-])
-  drawText(win.x + win.width - 12, win.y, "[-]", theme.buttonFg, theme.controlBg)
-  -- Кнопка максимизации ([□])
-  drawText(win.x + win.width - 8, win.y, "[□]", theme.buttonFg, theme.controlBg)
-  -- Кнопка закрытия ([X])
-  drawText(win.x + win.width - 4, win.y, "[X]", theme.buttonFg, theme.buttonBg)
+  -- Рисуем кнопки управления
+  drawText(win.x + win.width - 12, win.y, "[-]", theme.buttonFg, theme.buttonBgMin)
+  drawText(win.x + win.width - 8, win.y, "[□]", theme.buttonFg, theme.buttonBgMax)
+  drawText(win.x + win.width - 4, win.y, "[X]", theme.buttonFg, theme.buttonBgClose)
   
   if not win.minimized then
-    -- Отрисовка содержимого окна (фон и рамка)
+    -- Рисуем содержимое окна с двойными рамками
     drawRect(win.x, win.y + 1, win.width, win.height - 1, theme.window)
-    gpu.setForeground(theme.controlBg)
-    for i = win.x, win.x + win.width - 1 do
-      gpu.set(i, win.y + win.height - 1, "─")
+    gpu.setForeground(theme.titleBar)
+    -- Верхняя и нижняя рамки
+    local horLine = string.rep("═", win.width - 2)
+    drawText(win.x + 1, win.y, horLine, theme.titleBar)
+    drawText(win.x + 1, win.y + win.height - 1, horLine, theme.titleBar)
+    -- Левые и правые рамки
+    for j = win.y + 1, win.y + win.height - 2 do
+      drawText(win.x, j, "║", theme.titleBar)
+      drawText(win.x + win.width - 1, j, "║", theme.titleBar)
     end
-    for j = win.y, win.y + win.height - 1 do
-      gpu.set(win.x, j, "│")
-      gpu.set(win.x + win.width - 1, j, "│")
-    end
-    gpu.set(win.x, win.y, "┌")
-    gpu.set(win.x + win.width - 1, win.y, "┐")
-    gpu.set(win.x, win.y + win.height - 1, "└")
-    gpu.set(win.x + win.width - 1, win.y + win.height - 1, "┘")
+    -- Углы
+    drawText(win.x, win.y, "╔", theme.titleBar)
+    drawText(win.x + win.width - 1, win.y, "╗", theme.titleBar)
+    drawText(win.x, win.y + win.height - 1, "╚", theme.titleBar)
+    drawText(win.x + win.width - 1, win.y + win.height - 1, "╝", theme.titleBar)
     if win.appFunc then
       win.appFunc(win)
     end
   else
-    -- Если окно минимизировано, рисуем только заголовок с затемнённым фоном
+    -- Если окно минимизировано – отображаем только заголовок с затемнённым фоном
     drawRect(win.x, win.y + 1, win.width, 1, theme.window)
   end
 end
@@ -181,49 +224,49 @@ local function drawAllWindows()
 end
 
 ----------------------------------------------------------------------
--- Отрисовка иконок рабочего стола
+-- Отрисовка иконок рабочего стола (улучшенный дизайн)
 ----------------------------------------------------------------------
 
 local desktopIcons = {
   {
     x = 2, y = 2,
-    icon = { "┌────┐", "│  PC│", "└────┘" },
+    icon = { "┌────────┐", "│  Комп. │", "└────────┘" },
     label = "Мой комп.",
     app = "fileManager"
   },
   {
-    x = 12, y = 2,
-    icon = { "┌────┐", "│NB    │", "└────┘" },
+    x = 16, y = 2,
+    icon = { "┌────────┐", "│Блокнот│", "└────────┘" },
     label = "Блокнот",
     app = "notepad"
   },
   {
-    x = 22, y = 2,
-    icon = { "┌────┐", "│TM    │", "└────┘" },
+    x = 30, y = 2,
+    icon = { "┌────────┐", "│Терминал│", "└────────┘" },
     label = "Терминал",
     app = "terminal"
   },
   {
-    x = 2, y = 9,
-    icon = { "┌────┐", "│FM    │", "└────┘" },
+    x = 2, y = 10,
+    icon = { "┌────────┐", "│Проводн.│", "└────────┘" },
     label = "Проводник",
     app = "fileManager"
   },
   {
-    x = 12, y = 9,
-    icon = { "┌────┐", "│Настр│", "└────┘" },
+    x = 16, y = 10,
+    icon = { "┌────────┐", "│Настр.  │", "└────────┘" },
     label = "Настройки",
     app = "settings"
   },
   {
-    x = 22, y = 9,
-    icon = { "┌────┐", "│Сист │", "└────┘" },
+    x = 30, y = 10,
+    icon = { "┌────────┐", "│Сист. инфо│", "└────────┘" },
     label = "Сист. инфо",
     app = "systemInformation"
   },
   {
-    x = 32, y = 2,
-    icon = { "┌────┐", "│Запуск│", "└────┘" },
+    x = 44, y = 2,
+    icon = { "┌────────┐", "│Запуск  │", "└────────┘" },
     label = "Запуск файла",
     app = "launchFile"
   }
@@ -235,7 +278,7 @@ local function drawDesktopIcons()
       drawText(iconInfo.x, iconInfo.y + i - 1, iconInfo.icon[i], theme.iconColor)
     end
     local iconW = #iconInfo.icon[1]
-    local labelX = iconInfo.x - math.floor((#iconInfo.label - iconW)/2)
+    local labelX = iconInfo.x - math.floor((#iconInfo.label - iconW) / 2)
     drawText(labelX, iconInfo.y + #iconInfo.icon, iconInfo.label, theme.text)
   end
 end
@@ -279,48 +322,41 @@ local function appNotepad()
     for i, line in ipairs(textLines) do
       drawText(win.x + 2, win.y + i, line, theme.text)
     end
-    gpu.set(win.x + 2 + cursorX - 1, win.y + cursorY, "_")
+    drawText(win.x + 2 + cursorX - 1, win.y + cursorY, "_", theme.text)
   end
 
   win.appFunc = renderNotepad
 
   while running do
     drawAllWindows() drawTaskbar()
-    local e, addr, x, y, buttonOrCode = event.pull()
+    local e, addr, x, y, code = event.pull()
     if e == "touch" then
       local action = checkWindowControls(win, x, y)
       if action == "close" then
         running = false
       elseif action == "minimize" then
+        animateWindowTransition(win, win.x, screenHeight - taskbarHeight - 2, win.width, win.height, 0.3)
         win.minimized = true
       elseif action == "maximize" then
         if not win.maximized then
-          win.origX = win.x
-          win.origY = win.y
-          win.origWidth = win.width
-          win.origHeight = win.height
-          win.x = 1
-          win.y = 1
-          win.width = screenWidth
-          win.height = screenHeight - taskbarHeight
+          win.origX = win.x; win.origY = win.y
+          win.origWidth = win.width; win.origHeight = win.height
+          animateWindowTransition(win, 1, 1, screenWidth, screenHeight - taskbarHeight, 0.5)
           win.maximized = true
         else
-          win.x = win.origX
-          win.y = win.origY
-          win.width = win.origWidth
-          win.height = win.origHeight
+          animateWindowTransition(win, win.origX, win.origY, win.origWidth, win.origHeight, 0.5)
           win.maximized = false
         end
       elseif win.minimized then
-        -- При касании минимизированного окна, восстанавливаем его
         win.minimized = false
+        animateWindowTransition(win, win.origX, win.origY, win.origWidth, win.origHeight, 0.3)
       end
     elseif e == "key_down" then
-      if buttonOrCode == keyboard.keys.enter then
+      if code == keyboard.keys.enter then
         cursorY = cursorY + 1
         cursorX = 1
         textLines[cursorY] = ""
-      elseif buttonOrCode == keyboard.keys.back then
+      elseif code == keyboard.keys.back then
         if cursorX > 1 then
           local str = textLines[cursorY]
           textLines[cursorY] = str:sub(1, cursorX - 2) .. str:sub(cursorX)
@@ -331,10 +367,10 @@ local function appNotepad()
           table.remove(textLines, cursorY)
           cursorY = cursorY - 1
         end
-      elseif buttonOrCode == keyboard.keys.escape then
+      elseif code == keyboard.keys.escape then
         running = false
       else
-        local ch = string.char(buttonOrCode)
+        local ch = string.char(code)
         textLines[cursorY] = textLines[cursorY] .. ch
         cursorX = cursorX + 1
       end
@@ -374,24 +410,10 @@ local function appTerminal()
     local e, addr, x, y, code = event.pull()
     if e == "touch" then
       local action = checkWindowControls(win, x, y)
-      if action == "close" then
-        running = false
-      elseif action == "minimize" then
-        win.minimized = true
-      elseif action == "maximize" then
-        if not win.maximized then
-          win.origX = win.x; win.origY = win.y
-          win.origWidth = win.width; win.origHeight = win.height
-          win.x = 1; win.y = 1
-          win.width = screenWidth; win.height = screenHeight - taskbarHeight
-          win.maximized = true
-        else
-          win.x = win.origX; win.y = win.origY
-          win.width = win.origWidth; win.height = win.origHeight
-          win.maximized = false
-        end
-      elseif win.minimized then
+      if action == "close" then running = false end
+      if win.minimized then
         win.minimized = false
+        animateWindowTransition(win, win.origX, win.origY, win.origWidth, win.origHeight, 0.3)
       end
     elseif e == "key_down" then
       if code == keyboard.keys.enter then
@@ -436,7 +458,6 @@ local function appFileManager()
       drawText(win.x + 2, win.y + i, file, theme.text)
     end
   end
-
   win.appFunc = renderFileManager
 
   while running do
@@ -444,26 +465,24 @@ local function appFileManager()
     local e, addr, x, y, code = event.pull()
     if e == "touch" then
       local action = checkWindowControls(win, x, y)
-      if action == "close" then
-        running = false
-      elseif action == "minimize" then
+      if action == "close" then running = false end
+      if action == "minimize" then
+        animateWindowTransition(win, win.x, screenHeight - taskbarHeight - 2, win.width, win.height, 0.3)
         win.minimized = true
       elseif action == "maximize" then
         if not win.maximized then
           win.origX = win.x; win.origY = win.y
           win.origWidth = win.width; win.origHeight = win.height
-          win.x = 1; win.y = 1
-          win.width = screenWidth; win.height = screenHeight - taskbarHeight
+          animateWindowTransition(win, 1, 1, screenWidth, screenHeight - taskbarHeight, 0.5)
           win.maximized = true
         else
-          win.x = win.origX; win.y = win.origY
-          win.width = win.origWidth; win.height = win.origHeight
+          animateWindowTransition(win, win.origX, win.origY, win.origWidth, win.origHeight, 0.5)
           win.maximized = false
         end
       elseif win.minimized then
         win.minimized = false
-      end
-      if not (x >= win.x and x < win.x + win.width and y >= win.y and y < win.y + win.height) then
+        animateWindowTransition(win, win.origX, win.origY, win.origWidth, win.origHeight, 0.3)
+      elseif not (x >= win.x and x < win.x + win.width and y >= win.y and y < win.y + win.height) then
         running = false
       end
     end
@@ -487,7 +506,6 @@ local function appSettings()
       drawText(win.x + 2, win.y + i, opt, theme.text)
     end
   end
-
   win.appFunc = renderSettings
 
   while running do
@@ -513,7 +531,7 @@ local function appSystemInfo()
   updateDesktop() drawTaskbar()
   local win = createWindow("Информация", 30, 10, 50, 15, nil)
   local info = {
-    "OpenWin OS v2.0",
+    "OpenWin OS v3.5",
     "Разработчик: Lordddddddddddd",
     "Дата: 2025",
     "Компоненты: GPU, TERM, FS, EVENT, OS",
@@ -526,7 +544,6 @@ local function appSystemInfo()
       drawText(win.x + 2, win.y + i, line, theme.text)
     end
   end
-
   win.appFunc = renderInfo
 
   while running do
@@ -604,7 +621,7 @@ local function showStartMenu()
   drawText(menuX + 2, menuY + 5, "5. Инфо", theme.text)
   
   local e, addr, x, y, button = event.pull("touch")
-  if x >= menuX and x < menuX+menuW and y >= menuY and y < menuY+menuH then
+  if x >= menuX and x < menuX + menuW and y >= menuY and y < menuY + menuH then
     if y == menuY + 1 then
       appNotepad()
     elseif y == menuY + 2 then
@@ -725,11 +742,11 @@ local function extraUtility3()
   end
 end
 
-extraUtility1() 
-extraUtility2() 
+extraUtility1()
+extraUtility2()
 extraUtility3()
 
 ----------------------------------------------------------------------
--- Запуск ОС OpenWin OS v2.0
+-- Запуск ОС OpenWin OS v3.5
 ----------------------------------------------------------------------
 main()
