@@ -1,12 +1,13 @@
 ----------------------------------------------------------------------
--- OpenWin OS v1.2
--- Расширенная ОС для OpenComputers с возможностью запуска файлов
--- Windows 10-подобный интерфейс, детализированные иконки и приложение "Запуск файла"
+-- OpenWin OS v1.3
+-- Windows 10-подобная операционная система для OpenComputers
+-- Добавлена возможность закрывать открытые приложения через кнопку "X" 
+-- в заголовке окна (как в Windows).
 -- Автор: Lordddddddddddd / AI Companion
 -- Дата: 2025 год
 ----------------------------------------------------------------------
 
--- Подключаем необходимые модули OpenComputers
+-- Подключение необходимых модулей OpenComputers
 local component       = require("component")
 local term            = require("term")
 local event           = require("event")
@@ -17,7 +18,7 @@ local shell           = require("shell")
 local serialization   = require("serialization")
 local gpu             = component.gpu
 
--- Определяем размеры экрана
+-- Определение размеров экрана
 local screenWidth, screenHeight = gpu.getResolution()
 
 -- Тема (цветовая схема)
@@ -32,7 +33,7 @@ local theme = {
 }
 
 ----------------------------------------------------------------------
--- Функции отрисовки и вспомогательные процедуры
+-- Вспомогательные функции отрисовки
 ----------------------------------------------------------------------
 
 local function clearScreen()
@@ -65,11 +66,22 @@ local function drawCenteredText(x, y, w, text, fg, bg)
 end
 
 ----------------------------------------------------------------------
+-- Функция проверки управления окном (кнопка закрытия)
+----------------------------------------------------------------------
+local function checkWindowControls(win, x, y)
+  -- Пусть наша кнопка закрытия занимает 3 символа в правом углу заголовка
+  if y == win.y and x >= win.x + win.width - 3 and x < win.x + win.width then
+    return "close"
+  end
+  return nil
+end
+
+----------------------------------------------------------------------
 -- Менеджер окон: создание, отрисовка, управление и закрытие окон
 ----------------------------------------------------------------------
 
-local windows = {}
-local windowID = 1
+local windows = {}       -- таблица с окнами
+local windowID = 1       -- уникальный ID для окон
 
 local function createWindow(title, x, y, w, h, appFunc)
   local win = {
@@ -79,7 +91,7 @@ local function createWindow(title, x, y, w, h, appFunc)
     y = y,
     width = w,
     height = h,
-    appFunc = appFunc,
+    appFunc = appFunc,  -- функция отрисовки содержимого окна
     active = true,
     focused = false,
   }
@@ -89,10 +101,15 @@ local function createWindow(title, x, y, w, h, appFunc)
 end
 
 local function drawWindow(win)
+  -- Отрисовка фона окна
   drawRect(win.x, win.y, win.width, win.height, theme.window)
+  -- Отрисовка строки заголовка окна
   gpu.setBackground(theme.titleBar)
   gpu.fill(win.x, win.y, win.width, 1, " ")
   drawText(win.x + 2, win.y, " " .. win.title .. " ", theme.text)
+  -- Отрисовка кнопки закрытия (иконка "X") в правом углу заголовка
+  drawText(win.x + win.width - 3, win.y, "X", theme.text, theme.titleBar)
+  -- Рамка окна
   gpu.setForeground(theme.button)
   for i = win.x, win.x + win.width - 1 do
     gpu.set(i, win.y, "─")
@@ -106,7 +123,10 @@ local function drawWindow(win)
   gpu.set(win.x + win.width - 1, win.y, "┐")
   gpu.set(win.x, win.y + win.height - 1, "└")
   gpu.set(win.x + win.width - 1, win.y + win.height - 1, "┘")
-  if win.appFunc then win.appFunc(win) end
+  
+  if win.appFunc then
+    win.appFunc(win)  -- Отрисовка содержимого окна
+  end
 end
 
 local function closeWindow(id)
@@ -120,12 +140,14 @@ end
 
 local function drawAllWindows()
   for _, win in ipairs(windows) do
-    if win.active then drawWindow(win) end
+    if win.active then
+      drawWindow(win)
+    end
   end
 end
 
 ----------------------------------------------------------------------
--- Отрисовка иконок ярлыков рабочего стола (детализированный вариант)
+-- Отрисовка детализированных иконок на рабочем столе
 ----------------------------------------------------------------------
 
 local desktopIcons = {
@@ -209,7 +231,7 @@ end
 ----------------------------------------------------------------------
 
 ------------------------------
--- Блокнот (Notepad)
+-- Приложение: Блокнот (Notepad)
 ------------------------------
 local function appNotepad()
   updateDesktop() drawTaskbar()
@@ -217,6 +239,7 @@ local function appNotepad()
   local textLines = {""}
   local cursorX, cursorY = 1, 1
   local running = true
+
   local function renderNotepad()
     drawWindow(win)
     gpu.setBackground(theme.window)
@@ -225,30 +248,38 @@ local function appNotepad()
     end
     gpu.set(win.x + 2 + cursorX - 1, win.y + cursorY, "_")
   end
+
   while running do
     renderNotepad()
-    local _, _, char, code = event.pull("key_down")
-    if code == 28 then
-      cursorY = cursorY + 1
-      cursorX = 1
-      textLines[cursorY] = ""
-    elseif code == 14 then
-      if cursorX > 1 then
-        local str = textLines[cursorY]
-        textLines[cursorY] = str:sub(1, cursorX - 2) .. str:sub(cursorX)
-        cursorX = cursorX - 1
-      elseif cursorY > 1 then
-        cursorX = #textLines[cursorY - 1] + 1
-        textLines[cursorY - 1] = textLines[cursorY - 1] .. textLines[cursorY]
-        table.remove(textLines, cursorY)
-        cursorY = cursorY - 1
+    local e, addr, p1, p2, p3 = event.pull()  -- ждем любое событие
+    if e == "touch" then
+      local action = checkWindowControls(win, p1, p2)
+      if action == "close" then
+        running = false
       end
-    elseif code == 1 then
-      running = false
-    else
-      local ch = string.char(char)
-      textLines[cursorY] = textLines[cursorY] .. ch
-      cursorX = cursorX + 1
+    elseif e == "key_down" then
+      if p3 == 28 then  -- Enter
+        cursorY = cursorY + 1
+        cursorX = 1
+        textLines[cursorY] = ""
+      elseif p3 == 14 then  -- Backspace
+        if cursorX > 1 then
+          local str = textLines[cursorY]
+          textLines[cursorY] = str:sub(1, cursorX - 2) .. str:sub(cursorX)
+          cursorX = cursorX - 1
+        elseif cursorY > 1 then
+          cursorX = #textLines[cursorY - 1] + 1
+          textLines[cursorY - 1] = textLines[cursorY - 1] .. textLines[cursorY]
+          table.remove(textLines, cursorY)
+          cursorY = cursorY - 1
+        end
+      elseif p3 == 1 then  -- Esc
+        running = false
+      else
+        local ch = string.char(p3)
+        textLines[cursorY] = textLines[cursorY] .. ch
+        cursorX = cursorX + 1
+      end
     end
   end
   closeWindow(win.id)
@@ -256,7 +287,7 @@ local function appNotepad()
 end
 
 ------------------------------
--- Терминал
+-- Приложение: Терминал
 ------------------------------
 local function appTerminal()
   updateDesktop() drawTaskbar()
@@ -264,6 +295,7 @@ local function appTerminal()
   local history = {}
   local inputLine = ""
   local running = true
+
   local function renderTerminal()
     drawWindow(win)
     gpu.setBackground(theme.window)
@@ -276,41 +308,52 @@ local function appTerminal()
     end
     drawText(win.x + 2, win.y + yOff, "> " .. inputLine, theme.text)
   end
+
   while running do
     renderTerminal()
-    local _, _, key, char, code = event.pull("key_down")
-    if code == 28 then
-      table.insert(history, "> " .. inputLine)
-      inputLine = ""
-    elseif code == 14 then
-      inputLine = inputLine:sub(1, -2)
-    elseif code == 1 then
-      running = false
-    else
-      inputLine = inputLine .. string.char(char or 0)
+    local e, addr, p1, p2, p3 = event.pull()
+    if e == "touch" then
+      local action = checkWindowControls(win, p1, p2)
+      if action == "close" then
+        running = false
+      end
+    elseif e == "key_down" then
+      if p3 == 28 then
+        table.insert(history, "> " .. inputLine)
+        inputLine = ""
+      elseif p3 == 14 then
+        inputLine = inputLine:sub(1, -2)
+      elseif p3 == 1 then
+        running = false
+      else
+        inputLine = inputLine .. string.char(p3 or 0)
+      end
+      if #history > (win.height - 3) then table.remove(history, 1) end
     end
-    if #history > (win.height - 3) then table.remove(history, 1) end
   end
   closeWindow(win.id)
   updateDesktop() drawTaskbar()
 end
 
 ------------------------------
--- Проводник (File Manager)
+-- Приложение: Проводник (File Manager)
 ------------------------------
 local function appFileManager()
   updateDesktop() drawTaskbar()
   local win = createWindow("Проводник", 20, 10, 60, 20)
   local currentPath = "/"
   local fileList = {}
+
   local function refreshFiles()
     fileList = {}
     for name, attr in filesystem.list(currentPath) do
       table.insert(fileList, name)
     end
   end
+
   refreshFiles()
   local running = true
+
   local function renderFileManager()
     drawWindow(win)
     gpu.setBackground(theme.window)
@@ -318,11 +361,20 @@ local function appFileManager()
       drawText(win.x + 2, win.y + i, file, theme.text)
     end
   end
+
   while running do
     renderFileManager()
-    local _, _, x, y, button = event.pull("touch")
-    if not (x >= win.x and x < win.x + win.width and y >= win.y and y < win.y + win.height) then
-      running = false
+    local e, addr, p1, p2, p3 = event.pull()
+    if e == "touch" then
+      local action = checkWindowControls(win, p1, p2)
+      if action == "close" then
+        running = false
+      end
+    end
+    if e == "touch" then
+      if not (p1 >= win.x and p1 < win.x + win.width and p2 >= win.y and p2 < win.y + win.height) then
+        running = false
+      end
     end
   end
   closeWindow(win.id)
@@ -330,13 +382,14 @@ local function appFileManager()
 end
 
 ------------------------------
--- Настройки
+-- Приложение: Настройки
 ------------------------------
 local function appSettings()
   updateDesktop() drawTaskbar()
   local win = createWindow("Настройки", 25, 8, 50, 15)
   local options = {"Звук", "Видео", "Сеть", "Обновления", "О системе"}
   local running = true
+
   local function renderSettings()
     drawWindow(win)
     gpu.setBackground(theme.window)
@@ -344,13 +397,16 @@ local function appSettings()
       drawText(win.x + 2, win.y + i, opt, theme.text)
     end
   end
+
   while running do
     renderSettings()
-    local _, _, x, y, button = event.pull("touch")
-    if not (x >= win.x and x < win.x + win.width and y >= win.y and y < win.y + win.height) then
-      running = false
-    else
-      running = false
+    local e, addr, p1, p2, p3 = event.pull()
+    if e == "touch" then
+      local action = checkWindowControls(win, p1, p2)
+      if action == "close" then running = false end
+      if not (p1 >= win.x and p1 < win.x + win.width and p2 >= win.y and p2 < win.y + win.height) then
+        running = false
+      end
     end
   end
   closeWindow(win.id)
@@ -358,19 +414,20 @@ local function appSettings()
 end
 
 ------------------------------
--- Системная информация
+-- Приложение: Системная информация
 ------------------------------
 local function appSystemInfo()
   updateDesktop() drawTaskbar()
   local win = createWindow("Информация", 30, 10, 50, 15)
   local info = {
-    "OpenWin OS v1.2",
+    "OpenWin OS v1.3",
     "Разработчик: Lordddddddddddd",
     "Дата: 2025",
     "Компоненты: GPU, TERM, FS, EVENT, OS",
     "Система: OpenComputers"
   }
   local running = true
+
   local function renderInfo()
     drawWindow(win)
     gpu.setBackground(theme.window)
@@ -378,11 +435,16 @@ local function appSystemInfo()
       drawText(win.x + 2, win.y + i, line, theme.text)
     end
   end
+
   while running do
     renderInfo()
-    local _, _, x, y, button = event.pull("touch")
-    if not (x >= win.x and x < win.x + win.width and y >= win.y and y < win.y + win.height) then
-      running = false
+    local e, addr, p1, p2, p3 = event.pull()
+    if e == "touch" then
+      local action = checkWindowControls(win, p1, p2)
+      if action == "close" then running = false end
+      if not (p1 >= win.x and p1 < win.x + win.width and p2 >= win.y and p2 < win.y + win.height) then
+        running = false
+      end
     end
   end
   closeWindow(win.id)
@@ -390,7 +452,7 @@ local function appSystemInfo()
 end
 
 ------------------------------
--- Новое приложение: Запуск файла
+-- Приложение: Запуск файла
 ------------------------------
 local function appLaunchFile()
   updateDesktop() drawTaskbar()
@@ -401,19 +463,27 @@ local function appLaunchFile()
   local filePath = ""
   local running = true
   while running do
-    local e, addr, char, code = event.pull("key_down")
-    if code == 28 then  -- Enter
-      running = false
-    elseif code == 14 then  -- Backspace
-      filePath = filePath:sub(1, -2)
-    elseif code == 1 then  -- Esc для выхода без запуска
-      running = false
-      filePath = ""
-    else
-      filePath = filePath .. string.char(char or 0)
+    local e, addr, p1, p2, p3 = event.pull()
+    if e == "touch" then
+      local action = checkWindowControls(win, p1, p2)
+      if action == "close" then
+        running = false
+        break
+      end
+    elseif e == "key_down" then
+      if p3 == 28 then
+        running = false
+      elseif p3 == 14 then
+        filePath = filePath:sub(1, -2)
+      elseif p3 == 1 then
+        running = false
+        filePath = ""
+      else
+        filePath = filePath .. string.char(p3 or 0)
+      end
+      drawRect(win.x + 2, win.y + 3, win.width - 4, 1, theme.window)
+      drawText(win.x + 2, win.y + 3, filePath, theme.text)
     end
-    drawRect(win.x + 2, win.y + 3, win.width - 4, 1, theme.window)
-    drawText(win.x + 2, win.y + 3, filePath, theme.text)
   end
   closeWindow(win.id)
   if #filePath > 0 then
@@ -438,7 +508,7 @@ local function showStartMenu()
   drawText(menuX + 2, menuY + 4, "4. Настройки", theme.text)
   drawText(menuX + 2, menuY + 5, "5. Инфо", theme.text)
   
-  local _, _, x, y, button = event.pull("touch")
+  local e, addr, x, y, button = event.pull("touch")
   if x >= menuX and x < menuX + menuW and y >= menuY and y < menuY + menuH then
     if y == menuY + 1 then
       appNotepad()
@@ -461,7 +531,7 @@ end
 
 local function globalKeyListener()
   while true do
-    local _, _, char, code = event.pull("key_down")
+    local e, addr, char, code = event.pull("key_down")
     if code == keyboard.keys.f5 then
       drawText(1, math.floor(screenHeight/2), "Перезагрузка...", 0x00FF00)
       os.sleep(2)
@@ -482,15 +552,15 @@ end
 local function desktopLoop()
   updateDesktop() drawTaskbar()
   while true do
-    local _, _, x, y, button = event.pull("touch")
+    local e, addr, x, y, button = event.pull("touch")
+    -- Если клик по кнопке "Start" на панели задач
     if y == screenHeight - taskbarHeight + 1 and x >= 2 and x < 10 then
       showStartMenu()
     else
       for _, iconInfo in ipairs(desktopIcons) do
         local iconW = #iconInfo.icon[1]
         local iconH = #iconInfo.icon + 1
-        if x >= iconInfo.x and x < iconInfo.x + iconW 
-           and y >= iconInfo.y and y < iconInfo.y + iconH then
+        if x >= iconInfo.x and x < iconInfo.x + iconW and y >= iconInfo.y and y < iconInfo.y + iconH then
           if iconInfo.app == "notepad" then
             appNotepad()
           elseif iconInfo.app == "terminal" then
@@ -542,20 +612,26 @@ end
 ----------------------------------------------------------------------
 
 local function extraUtility1()
-  for i = 1, 10 do print("ExtraUtility1 line " .. i) end
+  for i = 1, 10 do
+    print("ExtraUtility1 line " .. i)
+  end
 end
 
 local function extraUtility2()
-  for i = 1, 10 do print("ExtraUtility2 line " .. i) end
+  for i = 1, 10 do
+    print("ExtraUtility2 line " .. i)
+  end
 end
 
 local function extraUtility3()
-  for i = 1, 10 do print("ExtraUtility3 line " .. i) end
+  for i = 1, 10 do
+    print("ExtraUtility3 line " .. i)
+  end
 end
 
 extraUtility1() extraUtility2() extraUtility3()
 
 ----------------------------------------------------------------------
--- Запуск ОС OpenWin OS v1.2
+-- Запуск ОС OpenWin OS v1.3
 ----------------------------------------------------------------------
 main()
